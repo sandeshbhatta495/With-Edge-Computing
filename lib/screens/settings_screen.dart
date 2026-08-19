@@ -15,9 +15,9 @@ class SettingsScreen extends ConsumerStatefulWidget {
 }
 
 class _SettingsScreenState extends ConsumerState<SettingsScreen> {
-  // --------------------------------------------------------------------------
-  // WI-FI SERVICE
-  // --------------------------------------------------------------------------
+  // ============================================================================
+  // BASE STATION / WEBSOCKET
+  // ============================================================================
 
   final LivestockWebSocketService esp = LivestockWebSocketService();
 
@@ -25,30 +25,36 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   bool ledOn = false;
   bool _connecting = false;
 
-  // Pending-command flags so the UI can show "applying..." instead of
-  // instantly assuming success.
+  // ============================================================================
+  // PENDING COMMAND STATES
+  // ============================================================================
+
   bool _intervalPending = false;
+  bool _liveModePending = false;
   bool _ledPending = false;
 
   StreamSubscription<EspConnectionState>? _stateSubscription;
-  StreamSubscription<String>? _ackSubscription;
 
-  // --------------------------------------------------------------------------
-  // COLLAR INTERVAL
-  // --------------------------------------------------------------------------
+  // ============================================================================
+  // NORMAL COLLAR INTERVAL
+  // ============================================================================
 
   String selectedInterval = '1 minute';
 
-  // --------------------------------------------------------------------------
-  // INIT / DISPOSE
-  // --------------------------------------------------------------------------
+  // ============================================================================
+  // LIVE MODE INTERVAL
+  // ============================================================================
+
+  int _liveInterval = 5000;
+
+  // ============================================================================
+  // INIT
+  // ============================================================================
 
   @override
   void initState() {
     super.initState();
 
-    // Read the singleton's current state immediately instead of assuming
-    // disconnected, and stay in sync with it going forward (Issue 3).
     robotConnected = esp.isConnected;
 
     _stateSubscription = esp.stateStream.listen((state) {
@@ -64,55 +70,64 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     });
   }
 
+  // ============================================================================
+  // DISPOSE
+  // ============================================================================
+
   @override
   void dispose() {
     _stateSubscription?.cancel();
-    _ackSubscription?.cancel();
     super.dispose();
   }
 
-  // --------------------------------------------------------------------------
-  // ACK HELPER
-  // --------------------------------------------------------------------------
-  // Sends a command, then waits for the next ack message to arrive within
-  // [timeout]. Returns true if an ack showed up in time, false otherwise.
-  //
-  // NOTE: this currently treats *any* ack within the window as belonging to
-  // this command, since the base station handles one command at a time. If
-  // your firmware later echoes the command in the ack message, tighten this
-  // by checking `message.contains(expectedPrefix)` below.
+  // ============================================================================
+  // SEND COMMAND AND WAIT FOR ACK
+  // ============================================================================
+
   Future<bool> _sendAndAwaitAck(
     String command, {
     Duration timeout = const Duration(seconds: 5),
   }) async {
-    final completer = Completer<bool>();
-    late final StreamSubscription<String> sub;
+    if (!esp.isConnected) {
+      return false;
+    }
 
-    sub = esp.ackStream.listen((message) {
+    final completer = Completer<bool>();
+
+    late final StreamSubscription<String> ackSubscription;
+
+    ackSubscription = esp.ackStream.listen((message) {
+      debugPrint('ACK received: $message');
+
       if (!completer.isCompleted) {
         completer.complete(true);
       }
     });
 
-    esp.send(command);
+    try {
+      debugPrint('Sending command: $command');
 
-    final timer = Timer(timeout, () {
-      if (!completer.isCompleted) {
-        completer.complete(false);
-      }
-    });
+      esp.send(command);
 
-    final result = await completer.future;
+      final timer = Timer(timeout, () {
+        if (!completer.isCompleted) {
+          completer.complete(false);
+        }
+      });
 
-    timer.cancel();
-    await sub.cancel();
+      final result = await completer.future;
 
-    return result;
+      timer.cancel();
+
+      return result;
+    } finally {
+      await ackSubscription.cancel();
+    }
   }
 
-  // --------------------------------------------------------------------------
-  // COLLAR INTERVAL
-  // --------------------------------------------------------------------------
+  // ============================================================================
+  // NORMAL COLLAR INTERVAL
+  // ============================================================================
 
   Future<void> setCollarInterval(String value) async {
     if (!robotConnected) {
@@ -120,9 +135,11 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
       return;
     }
 
-    if (_intervalPending) return;
+    if (_intervalPending) {
+      return;
+    }
 
-    String command;
+    String? command;
 
     switch (value) {
       case '1 minute':
@@ -141,7 +158,9 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
         return;
     }
 
-    setState(() => _intervalPending = true);
+    setState(() {
+      _intervalPending = true;
+    });
 
     try {
       final acked = await _sendAndAwaitAck(command);
@@ -168,14 +187,16 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
       _showSnackBar('Failed to change collar interval', isError: true);
     } finally {
       if (mounted) {
-        setState(() => _intervalPending = false);
+        setState(() {
+          _intervalPending = false;
+        });
       }
     }
   }
 
-  // --------------------------------------------------------------------------
-  // INTERVAL DIALOG
-  // --------------------------------------------------------------------------
+  // ============================================================================
+  // NORMAL INTERVAL DIALOG
+  // ============================================================================
 
   Future<void> _showIntervalDialog() async {
     final selected = await showDialog<String>(
@@ -193,6 +214,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                 child: Text('1 minute'),
               ),
             ),
+
             SimpleDialogOption(
               onPressed: () {
                 Navigator.pop(dialogContext, '5 minutes');
@@ -202,6 +224,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                 child: Text('5 minutes'),
               ),
             ),
+
             SimpleDialogOption(
               onPressed: () {
                 Navigator.pop(dialogContext, '30 minutes');
@@ -216,28 +239,373 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
       },
     );
 
-    if (selected == null) return;
+    if (selected == null) {
+      return;
+    }
 
     await setCollarInterval(selected);
   }
 
-  // --------------------------------------------------------------------------
-  // WI-FI CONNECTION
-  // --------------------------------------------------------------------------
+  // ============================================================================
+  // LIVE MODE INTERVAL DIALOG
+  // ============================================================================
+
+  Future<void> _showLiveModeDialog() async {
+    int temporaryInterval = _liveInterval;
+
+    final result = await showDialog<int>(
+      context: context,
+      builder: (dialogContext) {
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            return AlertDialog(
+              title: const Text('Live Mode Interval'),
+
+              content: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text('Select transmission interval:'),
+
+                    const SizedBox(height: 16),
+
+                    SegmentedButton<int>(
+                      segments: const [
+                        ButtonSegment<int>(value: 5000, label: Text('5 sec')),
+                        ButtonSegment<int>(value: 30000, label: Text('30 sec')),
+                        ButtonSegment<int>(value: 60000, label: Text('1 min')),
+                      ],
+
+                      selected: {
+                        if ([5000, 30000, 60000].contains(temporaryInterval))
+                          temporaryInterval
+                        else
+                          5000,
+                      },
+
+                      onSelectionChanged: (Set<int> newSelection) {
+                        setDialogState(() {
+                          temporaryInterval = newSelection.first;
+                        });
+                      },
+                    ),
+
+                    const SizedBox(height: 20),
+
+                    const Divider(),
+
+                    const SizedBox(height: 8),
+
+                    const Text(
+                      'Custom interval',
+                      style: TextStyle(fontWeight: FontWeight.bold),
+                    ),
+
+                    const SizedBox(height: 8),
+
+                    OutlinedButton.icon(
+                      onPressed: () async {
+                        final custom = await _showCustomIntervalDialog(
+                          initialValue: temporaryInterval,
+                        );
+
+                        if (custom != null) {
+                          setDialogState(() {
+                            temporaryInterval = custom;
+                          });
+                        }
+                      },
+
+                      icon: const Icon(Icons.edit),
+
+                      label: Text(_formatInterval(temporaryInterval)),
+                    ),
+
+                    const SizedBox(height: 8),
+
+                    Text(
+                      'Current selection: '
+                      '${_formatInterval(temporaryInterval)}',
+                      style: TextStyle(color: Colors.grey[700], fontSize: 13),
+                    ),
+                  ],
+                ),
+              ),
+
+              actions: [
+                TextButton(
+                  onPressed: () {
+                    Navigator.pop(dialogContext);
+                  },
+                  child: const Text('Cancel'),
+                ),
+
+                FilledButton(
+                  onPressed: () {
+                    Navigator.pop(dialogContext, temporaryInterval);
+                  },
+                  child: const Text('Apply'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+
+    if (result == null) {
+      return;
+    }
+
+    await _applyLiveInterval(result);
+  }
+
+  // ============================================================================
+  // CUSTOM LIVE INTERVAL DIALOG
+  // ============================================================================
+
+  Future<int?> _showCustomIntervalDialog({required int initialValue}) async {
+    final controller = TextEditingController(
+      text: (initialValue ~/ 1000).toString(),
+    );
+
+    String unit = 'seconds';
+
+    final result = await showDialog<int>(
+      context: context,
+      builder: (dialogContext) {
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            return AlertDialog(
+              title: const Text('Custom Live Interval'),
+
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Align(
+                    alignment: Alignment.centerLeft,
+                    child: Text(
+                      'Set how often the collar transmits '
+                      'data while live mode is active.',
+                    ),
+                  ),
+
+                  const SizedBox(height: 20),
+
+                  TextField(
+                    controller: controller,
+                    keyboardType: const TextInputType.numberWithOptions(
+                      decimal: false,
+                    ),
+                    decoration: const InputDecoration(
+                      labelText: 'Interval',
+                      hintText: 'Enter value',
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+
+                  const SizedBox(height: 16),
+
+                  DropdownButtonFormField<String>(
+                    initialValue: unit,
+                    decoration: const InputDecoration(
+                      labelText: 'Unit',
+                      border: OutlineInputBorder(),
+                    ),
+
+                    items: const [
+                      DropdownMenuItem(
+                        value: 'seconds',
+                        child: Text('Seconds'),
+                      ),
+                      DropdownMenuItem(
+                        value: 'minutes',
+                        child: Text('Minutes'),
+                      ),
+                    ],
+
+                    onChanged: (value) {
+                      if (value == null) return;
+
+                      setDialogState(() {
+                        unit = value;
+                      });
+                    },
+                  ),
+
+                  const SizedBox(height: 12),
+
+                  Text(
+                    'Allowed range: 1 second to 30 minutes',
+                    style: TextStyle(fontSize: 12, color: Colors.grey[600]),
+                  ),
+                ],
+              ),
+
+              actions: [
+                TextButton(
+                  onPressed: () {
+                    Navigator.pop(dialogContext);
+                  },
+                  child: const Text('Cancel'),
+                ),
+
+                FilledButton(
+                  onPressed: () {
+                    final value = int.tryParse(controller.text.trim());
+
+                    if (value == null || value <= 0) {
+                      _showSnackBar('Enter a valid interval', isError: true);
+                      return;
+                    }
+
+                    int milliseconds;
+
+                    if (unit == 'seconds') {
+                      milliseconds = value * 1000;
+                    } else {
+                      milliseconds = value * 60 * 1000;
+                    }
+
+                    if (milliseconds < 1000) {
+                      _showSnackBar(
+                        'Minimum interval is 1 second',
+                        isError: true,
+                      );
+                      return;
+                    }
+
+                    if (milliseconds > 30 * 60 * 1000) {
+                      _showSnackBar(
+                        'Maximum interval is 30 minutes',
+                        isError: true,
+                      );
+                      return;
+                    }
+
+                    Navigator.pop(dialogContext, milliseconds);
+                  },
+                  child: const Text('Set'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+
+    controller.dispose();
+
+    return result;
+  }
+
+  // ============================================================================
+  // APPLY LIVE INTERVAL
+  // ============================================================================
+
+  Future<void> _applyLiveInterval(int interval) async {
+    if (!robotConnected) {
+      _showSnackBar('Base station is not connected', isError: true);
+      return;
+    }
+
+    if (_liveModePending) {
+      return;
+    }
+
+    setState(() {
+      _liveModePending = true;
+    });
+
+    try {
+      final command = 'SET_LIVE_INTERVAL:$interval';
+
+      final acked = await _sendAndAwaitAck(command);
+
+      if (!mounted) return;
+
+      if (acked) {
+        setState(() {
+          _liveInterval = interval;
+        });
+
+        _showSnackBar(
+          'Live interval set to '
+          '${_formatInterval(interval)}',
+        );
+      } else {
+        _showSnackBar(
+          'Base station did not confirm '
+          'the live interval',
+          isError: true,
+        );
+      }
+    } catch (e) {
+      debugPrint('Live interval error: $e');
+
+      if (!mounted) return;
+
+      _showSnackBar('Failed to set live interval', isError: true);
+    } finally {
+      if (mounted) {
+        setState(() {
+          _liveModePending = false;
+        });
+      }
+    }
+  }
+
+  // ============================================================================
+  // FORMAT INTERVAL
+  // ============================================================================
+
+  String _formatInterval(int milliseconds) {
+    if (milliseconds % 60000 == 0) {
+      final minutes = milliseconds ~/ 60000;
+
+      if (minutes == 1) {
+        return '1 minute';
+      }
+
+      return '$minutes minutes';
+    }
+
+    if (milliseconds % 1000 == 0) {
+      final seconds = milliseconds ~/ 1000;
+
+      if (seconds == 1) {
+        return '1 second';
+      }
+
+      return '$seconds seconds';
+    }
+
+    return '${milliseconds}ms';
+  }
+
+  // ============================================================================
+  // BASE STATION CONNECTION
+  // ============================================================================
 
   Future<void> connectWifi() async {
-    if (_connecting) return;
+    if (_connecting) {
+      return;
+    }
 
-    setState(() => _connecting = true);
+    setState(() {
+      _connecting = true;
+    });
 
     try {
       final connected = await esp.connect();
 
       if (!mounted) return;
 
-      // robotConnected itself is now driven by _stateSubscription; we only
-      // need to manage the "connecting" flag and the failure snackbar here.
-      setState(() => _connecting = false);
+      setState(() {
+        _connecting = false;
+        robotConnected = connected;
+      });
 
       if (!connected) {
         _showSnackBar('Base station could not be reached', isError: true);
@@ -247,20 +615,27 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
 
       if (!mounted) return;
 
-      setState(() => _connecting = false);
+      setState(() {
+        _connecting = false;
+        robotConnected = false;
+      });
 
       _showSnackBar('Failed to connect to base station', isError: true);
     }
   }
 
-  // --------------------------------------------------------------------------
+  // ============================================================================
   // LED CONTROL
-  // --------------------------------------------------------------------------
+  // ============================================================================
 
   Future<void> toggleLed(bool value) async {
-    if (!robotConnected || _ledPending) return;
+    if (!robotConnected || _ledPending) {
+      return;
+    }
 
-    setState(() => _ledPending = true);
+    setState(() {
+      _ledPending = true;
+    });
 
     try {
       final command = value ? 'LED_ON' : 'LED_OFF';
@@ -273,8 +648,14 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
         setState(() {
           ledOn = value;
         });
+
+        _showSnackBar(value ? 'LED turned on' : 'LED turned off');
       } else {
-        _showSnackBar('Collar did not confirm the LED change', isError: true);
+        _showSnackBar(
+          'Base station did not confirm '
+          'the LED change',
+          isError: true,
+        );
       }
     } catch (e) {
       debugPrint('LED command error: $e');
@@ -284,14 +665,16 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
       _showSnackBar('Failed to control LED', isError: true);
     } finally {
       if (mounted) {
-        setState(() => _ledPending = false);
+        setState(() {
+          _ledPending = false;
+        });
       }
     }
   }
 
-  // --------------------------------------------------------------------------
+  // ============================================================================
   // CLEAR HISTORY
-  // --------------------------------------------------------------------------
+  // ============================================================================
 
   Future<void> clearHistory() async {
     final confirm = await showDialog<bool>(
@@ -299,10 +682,12 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
       builder: (dialogContext) {
         return AlertDialog(
           title: const Text('Clear Alert History'),
+
           content: const Text(
-            'This will permanently delete all alert history. '
-            'Continue?',
+            'This will permanently delete all '
+            'alert history. Continue?',
           ),
+
           actions: [
             TextButton(
               onPressed: () {
@@ -310,6 +695,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
               },
               child: const Text('Cancel'),
             ),
+
             TextButton(
               onPressed: () {
                 Navigator.pop(dialogContext, true);
@@ -321,7 +707,9 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
       },
     );
 
-    if (confirm != true) return;
+    if (confirm != true) {
+      return;
+    }
 
     try {
       await DatabaseHelper.instance.clearLogs();
@@ -340,9 +728,9 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     }
   }
 
-  // --------------------------------------------------------------------------
+  // ============================================================================
   // SNACKBAR
-  // --------------------------------------------------------------------------
+  // ============================================================================
 
   void _showSnackBar(String message, {bool isError = false}) {
     if (!mounted) return;
@@ -357,9 +745,9 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
       );
   }
 
-  // --------------------------------------------------------------------------
+  // ============================================================================
   // BUILD
-  // --------------------------------------------------------------------------
+  // ============================================================================
 
   @override
   Widget build(BuildContext context) {
@@ -443,7 +831,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                 const Divider(height: 1),
 
                 // ------------------------------------------------------------
-                // COLLAR INTERVAL
+                // NORMAL COLLAR INTERVAL
                 // ------------------------------------------------------------
                 ListTile(
                   leading: _intervalPending
@@ -459,7 +847,8 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                   subtitle: Text(
                     _intervalPending
                         ? 'Applying...'
-                        : 'Send location every $selectedInterval',
+                        : 'Send location every '
+                              '$selectedInterval',
                   ),
 
                   trailing: const Icon(Icons.chevron_right),
@@ -469,8 +858,50 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                       : () {
                           _showSnackBar(
                             robotConnected
-                                ? 'Please wait for the current change to apply'
-                                : 'Base station is not connected',
+                                ? 'Please wait for the '
+                                      'current change to apply'
+                                : 'Base station is '
+                                      'not connected',
+                            isError: true,
+                          );
+                        },
+                ),
+
+                const Divider(height: 1),
+
+                // ------------------------------------------------------------
+                // LIVE MODE INTERVAL
+                // ------------------------------------------------------------
+                ListTile(
+                  leading: _liveModePending
+                      ? const SizedBox(
+                          width: 20,
+                          height: 20,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.videocam, color: Colors.red),
+
+                  title: const Text('Live Mode Interval'),
+
+                  subtitle: Text(
+                    _liveModePending
+                        ? 'Applying...'
+                        : 'Transmit every '
+                              '${_formatInterval(_liveInterval)} '
+                              'when live',
+                  ),
+
+                  trailing: const Icon(Icons.chevron_right),
+
+                  onTap: (robotConnected && !_liveModePending)
+                      ? _showLiveModeDialog
+                      : () {
+                          _showSnackBar(
+                            robotConnected
+                                ? 'Please wait for the '
+                                      'current change'
+                                : 'Base station is '
+                                      'not connected',
                             isError: true,
                           );
                         },
@@ -495,7 +926,8 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                   title: const Text('Clear Livestock History'),
 
                   subtitle: const Text(
-                    'Permanently deletes all history records',
+                    'Permanently deletes all '
+                    'history records',
                   ),
 
                   trailing: const Icon(Icons.chevron_right),
@@ -521,7 +953,10 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
 
                   title: Text('Livestock Tracker'),
 
-                  subtitle: Text('LoRa-Integrated GPS Geo-Fencing System'),
+                  subtitle: Text(
+                    'LoRa-Integrated GPS Geo-Fencing '
+                    'System',
+                  ),
                 ),
 
                 Divider(height: 1),
@@ -532,8 +967,8 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                   title: Text('Institution'),
 
                   subtitle: Text(
-                    'Advanced College of Engineering and '
-                    'Management (ACEM)\n'
+                    'Advanced College of Engineering '
+                    'and Management (ACEM)\n'
                     'Tribhuvan University, Nepal',
                   ),
 
