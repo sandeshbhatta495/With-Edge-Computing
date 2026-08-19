@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import '../geofence/geofence.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../providers/notification_provider.dart';
+import '../services/livestock_websocket_service.dart';
 
 class GeofencePanel extends ConsumerWidget {
   final bool showGeofencePanel;
@@ -39,6 +40,16 @@ class GeofencePanel extends ConsumerWidget {
               onPressed: () {
                 final isNew = geofence.savedPoints.isEmpty;
                 geofence.save();
+                //send Booundary to collar via Esp
+                if (geofence.points.isNotEmpty) {
+                  String boundaryString = "";
+                  for (var point in geofence.points) {
+                    boundaryString += "${point.latitude},${point.longitude};";
+                  }
+                  LivestockWebSocketService().send(
+                    'SET_BOUNDARY:$boundaryString',
+                  );
+                }
                 if (isNew) {
                   ref
                       .read(notificationProvider.notifier)

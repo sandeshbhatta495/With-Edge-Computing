@@ -124,7 +124,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
       "Satellites": animal.satellites,
       "Speed": animal.speed,
       "Moving": animal.moving,
+
+      // App's own polygon/geofence check.
       "Geofence_Status": "-",
+
+      // Collar-reported boundary status.
+      "Boundary_Status": animal.boundaryStatus,
+
       "Timestamp": animal.timestamp,
       "Battery": animal.battery,
       "Rssi": animal.rssi,
@@ -304,7 +310,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
     if (selectedFilter != "Present Data") {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text('Live view is only available when Present Data is selected.'),
+          content: Text(
+            'Live view is only available when Present Data is selected.',
+          ),
         ),
       );
       return;
@@ -312,6 +320,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
     final latitude = row["Latitude"];
     final longitude = row["Longitude"];
+    final animalId = row["Animal_ID"]?.toString() ?? "-";
 
     if (latitude == null || longitude == null) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -323,6 +332,15 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
     final latitudeValue = (latitude as num).toDouble();
     final longitudeValue = (longitude as num).toDouble();
+
+    esp.send('START_LIVE:5000');
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('Live location tracking started for animal $animalId.'),
+        duration: const Duration(seconds: 2),
+      ),
+    );
 
     Navigator.push(
       context,
@@ -352,7 +370,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
     try {
       final parsed = DateTime.parse(text);
-
       final local = parsed.toLocal();
 
       final year = local.year.toString().padLeft(4, '0');
@@ -427,6 +444,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     if (value is num) return value != 0;
 
     final text = value.toString().toLowerCase();
+
     return text == '1' || text == 'true' || text == 'moving';
   }
 
@@ -566,6 +584,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
   bool get _isLiveView => selectedFilter == "Present Data";
 
+  // ---------------------------------------------------------------------------
+  // APP GEOFENCE STATUS CHIP
+  // ---------------------------------------------------------------------------
+
   Widget _buildStatusChip(dynamic status) {
     final statusStr = status?.toString().toUpperCase() ?? "SAFE";
     final isBreached = statusStr == "BREACHED";
@@ -587,13 +609,90 @@ class _DashboardScreenState extends State<DashboardScreen> {
     );
   }
 
+  // ---------------------------------------------------------------------------
+  // COLLAR BOUNDARY STATUS CHIP
+  // ---------------------------------------------------------------------------
+  // This is different from _buildStatusChip().
+  //
+  // _buildStatusChip()     -> App's Geofence_Status
+  // _buildBoundaryChip()   -> Collar's boundaryStatus
+  //
+  // The collar reports INSIDE / OUTSIDE directly.
+
+  Widget _buildBoundaryChip(Object? status) {
+    final statusStr = status?.toString().toUpperCase() ?? "UNKNOWN";
+
+    if (statusStr == "INSIDE") {
+      return Container(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+        decoration: BoxDecoration(
+          color: Colors.green[100],
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: Text(
+          "INSIDE",
+          style: TextStyle(
+            fontSize: 10,
+            fontWeight: FontWeight.bold,
+            color: Colors.green[900],
+          ),
+        ),
+      );
+    } else if (statusStr == "OUTSIDE") {
+      return Container(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+        decoration: BoxDecoration(
+          color: Colors.red[100],
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: Text(
+          "OUTSIDE",
+          style: TextStyle(
+            fontSize: 10,
+            fontWeight: FontWeight.bold,
+            color: Colors.red[900],
+          ),
+        ),
+      );
+    }
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      decoration: BoxDecoration(
+        color: Colors.grey[200],
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: const Text(
+        "—",
+        style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold),
+      ),
+    );
+  }
+
+  // ---------------------------------------------------------------------------
+  // TABLE COLUMNS
+  // ---------------------------------------------------------------------------
+
   List<DataColumn> _buildColumns() {
     if (_isLiveView) {
       return const [
         DataColumn2(label: Text("ID"), size: ColumnSize.S, fixedWidth: 80),
-        DataColumn2(label: Text("Location"), size: ColumnSize.M, fixedWidth: 150),
+        DataColumn2(
+          label: Text("Location"),
+          size: ColumnSize.M,
+          fixedWidth: 150,
+        ),
         DataColumn2(label: Text("Status"), size: ColumnSize.S, fixedWidth: 100),
-        DataColumn2(label: Text("Movement"), size: ColumnSize.M, fixedWidth: 140),
+        DataColumn2(
+          label: Text("Boundary"),
+          size: ColumnSize.S,
+          fixedWidth: 100,
+        ),
+        DataColumn2(
+          label: Text("Movement"),
+          size: ColumnSize.M,
+          fixedWidth: 140,
+        ),
         DataColumn2(label: Text("Speed"), size: ColumnSize.S, fixedWidth: 90),
         DataColumn2(label: Text("Date"), size: ColumnSize.M, fixedWidth: 160),
         DataColumn2(label: Text("Battery"), size: ColumnSize.S, fixedWidth: 90),
@@ -602,6 +701,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
       ];
     }
 
+    // Historical branch unchanged.
     return const [
       DataColumn2(label: Text("ID"), size: ColumnSize.S, fixedWidth: 80),
       DataColumn2(label: Text("Location"), size: ColumnSize.M, fixedWidth: 120),
@@ -610,6 +710,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
       DataColumn2(label: Text("Battery"), size: ColumnSize.S, fixedWidth: 90),
     ];
   }
+
+  // ---------------------------------------------------------------------------
+  // TABLE ROWS
+  // ---------------------------------------------------------------------------
 
   List<DataRow> _buildRows() {
     return records.map((row) {
@@ -625,6 +729,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
               : null,
           cells: [
             DataCell(Text(animalId)),
+
             DataCell(
               Row(
                 mainAxisSize: MainAxisSize.min,
@@ -640,28 +745,47 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 ],
               ),
             ),
+
+            // App's own polygon/geofence status.
             DataCell(_buildStatusChip(row["Geofence_Status"])),
+
+            // Collar's own boundary status.
+            DataCell(_buildBoundaryChip(row["Boundary_Status"])),
+
             DataCell(_buildMovementChip(row["Moving"])),
+
             DataCell(Text(_formatSpeed(row["Speed"]))),
+
             DataCell(Text(_formatTimestamp(row["Timestamp"]))),
+
             DataCell(Text(_formatBattery(row["Battery"]))),
+
             DataCell(Text(_formatRssi(row["Rssi"]))),
+
             DataCell(Text(_lastUpdatedText(animalId))),
           ],
         );
       }
 
+      // -----------------------------------------------------------------------
+      // HISTORICAL ROW
+      // -----------------------------------------------------------------------
+
       return DataRow(
         cells: [
           DataCell(Text(animalId)),
+
           DataCell(
             TextButton(
               onPressed: () => _openLocation(row),
               child: const Text("View"),
             ),
           ),
+
           DataCell(_buildStatusChip(row["Geofence_Status"])),
+
           DataCell(Text(_formatTimestamp(row["Timestamp"]))),
+
           DataCell(Text(_formatBattery(row["Battery"]))),
         ],
       );
@@ -686,10 +810,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
             ),
         ],
       ),
-
       body: Padding(
         padding: const EdgeInsets.all(16),
-
         child: Column(
           children: [
             // -----------------------------------------------------------------
@@ -705,29 +827,24 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
                 PopupMenuButton<String>(
                   onSelected: _changeFilter,
-
                   itemBuilder: (context) => [
                     const PopupMenuItem(
                       value: "Present Data",
                       child: Text("Present Data"),
                     ),
-
                     const PopupMenuItem(
                       value: "Last 15 Days",
                       child: Text("Last 15 Days"),
                     ),
-
                     const PopupMenuItem(
                       value: "Last 30 Days",
                       child: Text("Last 30 Days"),
                     ),
-
                     const PopupMenuItem(
                       value: "All Data",
                       child: Text("All Data"),
                     ),
                   ],
-
                   child: Row(
                     children: [
                       Text(selectedFilter),
@@ -759,10 +876,16 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   : SingleChildScrollView(
                       scrollDirection: Axis.horizontal,
                       child: SizedBox(
-                        width: _isLiveView ? 1040 : 600,
+                        // Increased because live view now has the
+                        // additional Boundary column.
+                        width: _isLiveView ? 1140 : 600,
                         child: DataTable2(
                           fixedTopRows: 1,
-                          minWidth: _isLiveView ? 1040 : 600,
+
+                          // Increased because live view now has the
+                          // additional Boundary column.
+                          minWidth: _isLiveView ? 1140 : 600,
+
                           columnSpacing: 12,
                           horizontalMargin: 12,
                           columns: _buildColumns(),
