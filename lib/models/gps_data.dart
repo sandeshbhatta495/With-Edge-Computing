@@ -70,6 +70,29 @@ class GpsData {
     );
   }
 
+  /// Parses the base-station telemetry format:
+  /// DATA,A01,battery,lat,lon,altitude,satellites,speed,movement
+  factory GpsData.fromCsv(String packet, {int rssi = 0, double snr = 0.0}) {
+    final fields = packet.split(',').map((field) => field.trim()).toList();
+    if (fields.length < 9 || fields[0] != 'DATA') {
+      throw const FormatException('Invalid DATA packet');
+    }
+
+    return GpsData(
+      deviceId: fields[1],
+      battery: double.tryParse(fields[2]) ?? 0.0,
+      latitude: double.tryParse(fields[3]) ?? 0.0,
+      longitude: double.tryParse(fields[4]) ?? 0.0,
+      altitude: double.tryParse(fields[5]) ?? 0.0,
+      satellites: int.tryParse(fields[6]) ?? 0,
+      speed: double.tryParse(fields[7]) ?? 0.0,
+      moving: fields[8] == '1',
+      timestamp: DateTime.now().toUtc().toIso8601String(),
+      rssi: rssi,
+      snr: snr,
+    );
+  }
+
   Map<String, dynamic> toMap() {
     return {
       'device_id': deviceId,

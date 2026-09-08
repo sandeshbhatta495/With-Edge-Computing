@@ -40,15 +40,14 @@ class GeofencePanel extends ConsumerWidget {
               onPressed: () {
                 final isNew = geofence.savedPoints.isEmpty;
                 geofence.save();
-                //send Booundary to collar via Esp
                 if (geofence.points.isNotEmpty) {
-                  String boundaryString = "";
-                  for (var point in geofence.points) {
-                    boundaryString += "${point.latitude},${point.longitude};";
+                  final points = geofence.points
+                      .map((point) => <double>[point.latitude, point.longitude])
+                      .toList();
+                  final service = LivestockWebSocketService();
+                  for (final animalId in const ['A01', 'A02']) {
+                    service.sendFence(animalId, points);
                   }
-                  LivestockWebSocketService().send(
-                    'SET_BOUNDARY:$boundaryString',
-                  );
                 }
                 if (isNew) {
                   ref

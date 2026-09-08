@@ -2,7 +2,6 @@ import 'package:flutter_riverpod/legacy.dart'; // <-- add this
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/reporting_interval.dart';
-import '../services/livestock_websocket_service.dart';
 
 const _prefsKey = 'reporting_interval';
 
@@ -10,8 +9,6 @@ class ReportingIntervalNotifier extends StateNotifier<ReportingInterval> {
   ReportingIntervalNotifier() : super(ReportingInterval.oneMinute) {
     _load();
   }
-
-  final LivestockWebSocketService _esp = LivestockWebSocketService();
 
   Future<void> _load() async {
     final prefs = await SharedPreferences.getInstance();
@@ -31,9 +28,8 @@ class ReportingIntervalNotifier extends StateNotifier<ReportingInterval> {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(_prefsKey, interval.name);
 
-    if (_esp.isConnected) {
-      _esp.send(interval.command);
-    }
+    // The multihop firmware uses scheduled POLL packets and LIVE on/off;
+    // it does not implement the legacy SET_INTERVAL command.
   }
 }
 

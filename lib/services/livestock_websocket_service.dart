@@ -2,7 +2,10 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:flutter/foundation.dart';
+
 import '../database/database_helper.dart';
+import '../models/hardware_event.dart';
 import '../models/gps_data.dart';
 import '../models/base_station_data.dart';
 
@@ -46,6 +49,20 @@ class LivestockWebSocketService {
 
   Stream<String> get ackStream => _ackController.stream;
 
+  final StreamController<String> _alertController =
+      StreamController<String>.broadcast();
+
+  Stream<String> get alertStream => _alertController.stream;
+
+  final StreamController<HardwareAlert> _hardwareAlertController =
+      StreamController<HardwareAlert>.broadcast();
+  Stream<HardwareAlert> get hardwareAlertStream =>
+      _hardwareAlertController.stream;
+
+  final StreamController<StoredHardwareEvent> _eventController =
+      StreamController<StoredHardwareEvent>.broadcast();
+  Stream<StoredHardwareEvent> get storedEventStream => _eventController.stream;
+
   // --------------------------------------------------------------------------
   // CONNECT
   // --------------------------------------------------------------------------
@@ -79,8 +96,38 @@ class LivestockWebSocketService {
   void _onMessage(dynamic message) {
     try {
       final msgStr = message.toString().trim();
-      if (msgStr.toUpperCase().startsWith('ACK') || msgStr.toUpperCase().startsWith('OK')) {
+      final upper = msgStr.toUpperCase();
+      if (upper.startsWith('ACK') ||
+          upper.startsWith('OK') ||
+          upper.startsWith('COMMAND_') ||
+          upper.startsWith('EVENT_ACK_')) {
         _ackController.add(msgStr);
+        return;
+      }
+
+      if (upper.startsWith('DATA,')) {
+        final animal = GpsData.fromCsv(msgStr);
+        _animalController.add(animal);
+        DatabaseHelper.instance.recordLiveAnimalUpdate(animal).catchError((
+          Object e,
+        ) {
+          debugPrint('Failed to persist animal update: $e');
+        });
+        return;
+      }
+
+      if (upper.startsWith('ALERT,')) {
+        _alertController.add(msgStr);
+        _hardwareAlertController.add(HardwareAlert.fromCsv(msgStr));
+        return;
+      }
+
+      if (upper.startsWith('EVENT,')) {
+        _eventController.add(StoredHardwareEvent.fromCsv(msgStr));
+        return;
+      }
+
+      if (upper == 'EVENTS_END' || upper == 'EVENTS_EMPTY') {
         return;
       }
 
@@ -100,13 +147,13 @@ class LivestockWebSocketService {
         DatabaseHelper.instance.recordLiveAnimalUpdate(animal).catchError((
           Object e,
         ) {
-          // ignore: avoid_print
-          print('Failed to persist animal update: $e');
+          debugPrint('Failed to persist animal update: $e');
         });
       } else if (type == 'base_station') {
         _baseStationController.add(BaseStationData.fromJson(json));
       } else if (type == 'ack') {
-        final ackMsg = json['message']?.toString() ??
+        final ackMsg =
+            json['message']?.toString() ??
             json['ack']?.toString() ??
             json['command']?.toString() ??
             json['status']?.toString() ??
@@ -117,7 +164,11 @@ class LivestockWebSocketService {
       }
     } catch (_) {
       final msgStr = message?.toString().trim();
-      if (msgStr != null && (msgStr.toUpperCase().startsWith('ACK') || msgStr.toUpperCase().startsWith('OK'))) {
+      if (msgStr != null &&
+          (msgStr.toUpperCase().startsWith('ACK') ||
+              msgStr.toUpperCase().startsWith('OK') ||
+              msgStr.toUpperCase().startsWith('COMMAND_') ||
+              msgStr.toUpperCase().startsWith('EVENT_ACK_'))) {
         _ackController.add(msgStr);
       }
     }
@@ -129,6 +180,38 @@ class LivestockWebSocketService {
   void send(String command) {
     if (isConnected && _socket != null) {
       _socket!.add(command);
+    }
+  }
+
+  void sendLive(String animalId, bool enabled) {
+    send('LIVE,$animalId,${enabled ? 'ON' : 'OFF'}');
+  }
+
+  void poll(String animalId) {
+    send('POLL,$animalId');
+  }
+
+  void sendFence(String animalId, List<List<double>> points) {
+    final coordinates = points
+        .map(
+          (point) =>
+              '${point[0].toStringAsFixed(6)},${point[1].toStringAsFixed(6)}',
+        )
+        .join(',');
+    send('FENCE,$animalId,${points.length},$coordinates');
+  }
+
+  void requestStoredEvents() {
+    send('GET_EVENTS');
+  }
+
+  void acknowledgeStoredEvent(int eventId) {
+    send('EVENT_ACK,$eventId');
+  }
+
+  void enableLiveForAnimals(Iterable<String> animalIds) {
+    for (final animalId in animalIds) {
+      sendLive(animalId, true);
     }
   }
 
@@ -164,5 +247,8 @@ class LivestockWebSocketService {
     _baseStationController.close();
     _stateController.close();
     _ackController.close();
+    _alertController.close();
+    _hardwareAlertController.close();
+    _eventController.close();
   }
 }

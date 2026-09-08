@@ -12,6 +12,7 @@ import '../database/database_helper.dart';
 import '../geofence/geofence.dart';
 import '../geofence/map_layers.dart';
 import '../models/gps_data.dart';
+import '../models/hardware_event.dart';
 import '../providers/notification_provider.dart';
 import '../screens/alerts_screen.dart';
 import '../services/connectivity_service.dart';
@@ -25,11 +26,7 @@ class CommonScreen extends ConsumerStatefulWidget {
   final LatLng? initialCenter;
   final String? targetAnimalId;
 
-  const CommonScreen({
-    super.key,
-    this.initialCenter,
-    this.targetAnimalId,
-  });
+  const CommonScreen({super.key, this.initialCenter, this.targetAnimalId});
 
   @override
   ConsumerState<CommonScreen> createState() => _CommonScreenState();
@@ -63,6 +60,7 @@ class _CommonScreenState extends ConsumerState<CommonScreen> {
 
   StreamSubscription<GpsData>? _animalSubscription;
   StreamSubscription<EspConnectionState>? _stateSubscription;
+  StreamSubscription<HardwareAlert>? _hardwareAlertSubscription;
 
   // ---------------------------------------------------------------------------
   // GEOFENCE
@@ -144,6 +142,19 @@ class _CommonScreenState extends ConsumerState<CommonScreen> {
       _evaluateGeofenceBreach(animal);
     });
 
+    _hardwareAlertSubscription = esp.hardwareAlertStream.listen((alert) {
+      if (!mounted) return;
+      ref
+          .read(notificationProvider.notifier)
+          .log(
+            LogEventType.geofence,
+            'Hardware alert: ${alert.animalId} ${alert.type} (${alert.data})',
+          );
+      setState(() {
+        unreadAlerts++;
+      });
+    });
+
     listenToLocation();
 
     WidgetsBinding.instance.addPostFrameCallback((_) async {
@@ -211,7 +222,10 @@ class _CommonScreenState extends ConsumerState<CommonScreen> {
                 altitude: (row["Altitude"] as num?)?.toDouble() ?? 0.0,
                 satellites: (row["Satellites"] as num?)?.toInt() ?? 0,
                 speed: (row["Speed"] as num?)?.toDouble() ?? 0.0,
-                moving: row["Moving"] == 1 || row["Moving"] == true || row["Moving"] == "true",
+                moving:
+                    row["Moving"] == 1 ||
+                    row["Moving"] == true ||
+                    row["Moving"] == "true",
                 timestamp: row["Timestamp"]?.toString() ?? "",
                 battery: (battery as num?)?.toDouble() ?? 0.0,
                 rssi: (row["Rssi"] as num?)?.toInt() ?? 0,
@@ -234,7 +248,9 @@ class _CommonScreenState extends ConsumerState<CommonScreen> {
   Set<String> breachedAnimals = {};
 
   void _evaluateGeofenceBreach(GpsData animal) {
-    final polygon = geofence.points.isNotEmpty ? geofence.points : geofence.savedPoints;
+    final polygon = geofence.points.isNotEmpty
+        ? geofence.points
+        : geofence.savedPoints;
     if (polygon.length < 3) return;
 
     final point = LatLng(animal.latitude, animal.longitude);
@@ -256,10 +272,12 @@ class _CommonScreenState extends ConsumerState<CommonScreen> {
         breachedAnimals.add(animal.deviceId);
 
         // 1. Log notification & trigger local push
-        ref.read(notificationProvider.notifier).log(
-          LogEventType.boundaryBreached,
-          'GEOFENCE ALERT: Collar ${animal.deviceId} is OUTSIDE the boundary!',
-        );
+        ref
+            .read(notificationProvider.notifier)
+            .log(
+              LogEventType.boundaryBreached,
+              'GEOFENCE ALERT: Collar ${animal.deviceId} is OUTSIDE the boundary!',
+            );
 
         // 2. Show alert popup modal overlay
         _showBreachDialog(animal.deviceId, point);
@@ -283,7 +301,9 @@ class _CommonScreenState extends ConsumerState<CommonScreen> {
       barrierDismissible: false,
       builder: (BuildContext context) {
         return AlertDialog(
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(16),
+          ),
           backgroundColor: Colors.red[50],
           title: Row(
             children: const [
@@ -291,7 +311,10 @@ class _CommonScreenState extends ConsumerState<CommonScreen> {
               SizedBox(width: 10),
               Text(
                 "GEOFENCE BREACH!",
-                style: TextStyle(color: Colors.red, fontWeight: FontWeight.bold),
+                style: TextStyle(
+                  color: Colors.red,
+                  fontWeight: FontWeight.bold,
+                ),
               ),
             ],
           ),
@@ -301,7 +324,10 @@ class _CommonScreenState extends ConsumerState<CommonScreen> {
             children: [
               Text(
                 "Collar $animalId has crossed OUTSIDE the designated geofence boundary!",
-                style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
+                style: const TextStyle(
+                  fontSize: 15,
+                  fontWeight: FontWeight.w600,
+                ),
               ),
               const SizedBox(height: 12),
               Text("Latitude: ${location.latitude.toStringAsFixed(5)}"),
@@ -374,14 +400,18 @@ class _CommonScreenState extends ConsumerState<CommonScreen> {
                       vertical: 4,
                     ),
                     decoration: BoxDecoration(
-                      color: animal.moving ? Colors.green[100] : Colors.blue[100],
+                      color: animal.moving
+                          ? Colors.green[100]
+                          : Colors.blue[100],
                       borderRadius: BorderRadius.circular(12),
                     ),
                     child: Text(
                       animal.moving ? 'MOVING' : 'STATIONARY',
                       style: TextStyle(
                         fontWeight: FontWeight.bold,
-                        color: animal.moving ? Colors.green[900] : Colors.blue[900],
+                        color: animal.moving
+                            ? Colors.green[900]
+                            : Colors.blue[900],
                       ),
                     ),
                   ),
@@ -392,15 +422,24 @@ class _CommonScreenState extends ConsumerState<CommonScreen> {
                 mainAxisAlignment: MainAxisAlignment.spaceAround,
                 children: [
                   _detailColumn("Latitude", animal.latitude.toStringAsFixed(5)),
-                  _detailColumn("Longitude", animal.longitude.toStringAsFixed(5)),
-                  _detailColumn("Speed", "${animal.speed.toStringAsFixed(1)} km/h"),
+                  _detailColumn(
+                    "Longitude",
+                    animal.longitude.toStringAsFixed(5),
+                  ),
+                  _detailColumn(
+                    "Speed",
+                    "${animal.speed.toStringAsFixed(1)} km/h",
+                  ),
                 ],
               ),
               const SizedBox(height: 16),
               Row(
                 mainAxisAlignment: MainAxisAlignment.spaceAround,
                 children: [
-                  _detailColumn("Battery", "${animal.battery.toStringAsFixed(2)} V"),
+                  _detailColumn(
+                    "Battery",
+                    "${animal.battery.toStringAsFixed(2)} V",
+                  ),
                   _detailColumn("Signal (RSSI)", "${animal.rssi} dBm"),
                   _detailColumn("Satellites", "${animal.satellites}"),
                 ],
@@ -472,6 +511,7 @@ class _CommonScreenState extends ConsumerState<CommonScreen> {
     positionStream?.cancel();
     _animalSubscription?.cancel();
     _stateSubscription?.cancel();
+    _hardwareAlertSubscription?.cancel();
 
     // IMPORTANT:
     // Do not dispose the singleton WebSocket service here.
@@ -672,7 +712,9 @@ class _CommonScreenState extends ConsumerState<CommonScreen> {
 
             options: MapOptions(
               initialCenter:
-                  widget.initialCenter ?? mapState.currentLocation ?? const LatLng(27.7172, 85.3240),
+                  widget.initialCenter ??
+                  mapState.currentLocation ??
+                  const LatLng(27.7172, 85.3240),
 
               // Initial zoom remains inside both online/offline ranges.
               initialZoom: widget.initialCenter != null ? 17.0 : 15.0,
@@ -776,9 +818,14 @@ class _CommonScreenState extends ConsumerState<CommonScreen> {
                                   width: 26,
                                   height: 26,
                                   decoration: BoxDecoration(
-                                    color: isMoving ? Colors.green : Colors.blue,
+                                    color: isMoving
+                                        ? Colors.green
+                                        : Colors.blue,
                                     shape: BoxShape.circle,
-                                    border: Border.all(color: Colors.white, width: 3),
+                                    border: Border.all(
+                                      color: Colors.white,
+                                      width: 3,
+                                    ),
                                     boxShadow: const [
                                       BoxShadow(
                                         color: Colors.black38,
@@ -788,7 +835,9 @@ class _CommonScreenState extends ConsumerState<CommonScreen> {
                                     ],
                                   ),
                                   child: Icon(
-                                    isMoving ? Icons.directions_run : Icons.pets,
+                                    isMoving
+                                        ? Icons.directions_run
+                                        : Icons.pets,
                                     size: 14,
                                     color: Colors.white,
                                   ),
@@ -803,7 +852,10 @@ class _CommonScreenState extends ConsumerState<CommonScreen> {
                                     color: Colors.white,
                                     borderRadius: BorderRadius.circular(10),
                                     boxShadow: const [
-                                      BoxShadow(blurRadius: 3, color: Colors.black26),
+                                      BoxShadow(
+                                        blurRadius: 3,
+                                        color: Colors.black26,
+                                      ),
                                     ],
                                   ),
                                   child: Row(
@@ -849,7 +901,10 @@ class _CommonScreenState extends ConsumerState<CommonScreen> {
                                 decoration: BoxDecoration(
                                   color: Colors.blue,
                                   shape: BoxShape.circle,
-                                  border: Border.all(color: Colors.white, width: 4),
+                                  border: Border.all(
+                                    color: Colors.white,
+                                    width: 4,
+                                  ),
                                   boxShadow: const [
                                     BoxShadow(
                                       color: Colors.black38,
@@ -869,7 +924,10 @@ class _CommonScreenState extends ConsumerState<CommonScreen> {
                                   color: Colors.white,
                                   borderRadius: BorderRadius.circular(12),
                                   boxShadow: const [
-                                    BoxShadow(blurRadius: 3, color: Colors.black26),
+                                    BoxShadow(
+                                      blurRadius: 3,
+                                      color: Colors.black26,
+                                    ),
                                   ],
                                 ),
                                 child: Text(

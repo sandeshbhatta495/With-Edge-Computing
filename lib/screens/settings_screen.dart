@@ -99,7 +99,10 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     ackSubscription = esp.ackStream.listen((message) {
       debugPrint('ACK received: $message');
 
-      if (!completer.isCompleted) {
+      final upper = message.toUpperCase();
+      final isCompleted =
+          upper.startsWith('ACK') || upper.startsWith('COMMAND_SUCCESS');
+      if (isCompleted && !completer.isCompleted) {
         completer.complete(true);
       }
     });
@@ -139,46 +142,19 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
       return;
     }
 
-    String? command;
-
-    switch (value) {
-      case '1 minute':
-        command = 'SET_INTERVAL:60000';
-        break;
-
-      case '5 minutes':
-        command = 'SET_INTERVAL:300000';
-        break;
-
-      case '30 minutes':
-        command = 'SET_INTERVAL:1800000';
-        break;
-
-      default:
-        return;
-    }
-
     setState(() {
       _intervalPending = true;
     });
 
     try {
-      final acked = await _sendAndAwaitAck(command);
-
       if (!mounted) return;
 
-      if (acked) {
-        setState(() {
-          selectedInterval = value;
-        });
-
-        _showSnackBar('Collar interval changed to $value');
-      } else {
-        _showSnackBar(
-          'Collar did not confirm the interval change',
-          isError: true,
-        );
-      }
+      setState(() {
+        selectedInterval = value;
+      });
+      _showSnackBar(
+        'Saved locally. Collar polling is controlled by the base station.',
+      );
     } catch (e) {
       debugPrint('Collar interval error: $e');
 
@@ -519,28 +495,12 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     });
 
     try {
-      final command = 'SET_LIVE_INTERVAL:$interval';
-
-      final acked = await _sendAndAwaitAck(command);
-
       if (!mounted) return;
 
-      if (acked) {
-        setState(() {
-          _liveInterval = interval;
-        });
-
-        _showSnackBar(
-          'Live interval set to '
-          '${_formatInterval(interval)}',
-        );
-      } else {
-        _showSnackBar(
-          'Base station did not confirm '
-          'the live interval',
-          isError: true,
-        );
-      }
+      setState(() {
+        _liveInterval = interval;
+      });
+      _showSnackBar('Saved locally. Live mode uses the firmware interval.');
     } catch (e) {
       debugPrint('Live interval error: $e');
 

@@ -189,9 +189,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
         return;
       }
 
-      debugPrint('Dashboard: Requesting GET_ANIMALS');
-
-      esp.send('GET_ANIMALS');
+      debugPrint('Dashboard: enabling live telemetry on collars');
+      esp.enableLiveForAnimals(const ['A01', 'A02']);
     } finally {
       _requestingLiveData = false;
     }
@@ -333,7 +332,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     final latitudeValue = (latitude as num).toDouble();
     final longitudeValue = (longitude as num).toDouble();
 
-    esp.send('START_LIVE:5000');
+    esp.sendLive(animalId, true);
 
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(

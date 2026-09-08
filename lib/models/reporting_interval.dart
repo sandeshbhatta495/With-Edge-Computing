@@ -28,15 +28,6 @@ extension ReportingIntervalX on ReportingInterval {
     }
   }
 
-  /// Command sent to the base station. Base station/collar don't
-  /// implement this yet — this is forward-compatible plumbing.
-  String get command {
-    if (this == ReportingInterval.movementBased) {
-      return 'SET_INTERVAL:MOVEMENT';
-    }
-    return 'SET_INTERVAL:$seconds';
-  }
-
   static ReportingInterval fromStorageKey(String? key) {
     return ReportingInterval.values.firstWhere(
       (e) => e.name == key,
