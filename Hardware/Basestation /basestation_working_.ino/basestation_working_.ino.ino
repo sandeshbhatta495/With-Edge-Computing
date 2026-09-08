@@ -1,3 +1,15 @@
+#include <Adafruit_LSM303_U.h>
+#include <Adafruit_LSM303.h>
+
+#include <WebSocketsVersion.h>
+#include <SocketIOclient.h>
+#include <WebSockets.h>
+#include <WebSocketsNetworkClientSecure.h>
+#include <WebSocketsClient.h>
+#include <WebSocketsNetworkClient.h>
+#include <WebSocketsServer.h>
+#include <WebSockets4WebServer.h>
+
 #include <SPI.h>
 #include <LoRa.h>
 
