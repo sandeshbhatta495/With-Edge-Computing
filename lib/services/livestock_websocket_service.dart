@@ -5,11 +5,13 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 
 import '../database/database_helper.dart';
-import '../models/hardware_event.dart';
-import '../models/gps_data.dart';
 import '../models/base_station_data.dart';
+import '../models/gps_data.dart';
+import '../models/hardware_event.dart';
 
 enum EspConnectionState { disconnected, connecting, connected }
+
+enum StoredEventsSyncStatus { syncing, completed, empty, failed }
 
 class LivestockWebSocketService {
   // --------------------------------------------------------------------------
@@ -19,6 +21,23 @@ class LivestockWebSocketService {
       LivestockWebSocketService._internal();
   factory LivestockWebSocketService() => _instance;
   LivestockWebSocketService._internal();
+
+  // --------------------------------------------------------------------------
+  // EVENT SYNC CONTROLLER & TIMERS
+  // --------------------------------------------------------------------------
+  final StreamController<StoredEventsSyncStatus> _eventSyncController =
+      StreamController<StoredEventsSyncStatus>.broadcast();
+
+  Stream<StoredEventsSyncStatus> get eventSyncStream =>
+      _eventSyncController.stream;
+
+  Timer? _eventSyncTimer;
+
+  void _finishEventSync(StoredEventsSyncStatus status) {
+    _eventSyncTimer?.cancel();
+    _eventSyncTimer = null;
+    _eventSyncController.add(status);
+  }
 
   // --------------------------------------------------------------------------
   // STATE
@@ -46,12 +65,10 @@ class LivestockWebSocketService {
 
   final StreamController<String> _ackController =
       StreamController<String>.broadcast();
-
   Stream<String> get ackStream => _ackController.stream;
 
   final StreamController<String> _alertController =
       StreamController<String>.broadcast();
-
   Stream<String> get alertStream => _alertController.stream;
 
   final StreamController<HardwareAlert> _hardwareAlertController =
@@ -85,6 +102,7 @@ class LivestockWebSocketService {
       );
       return true;
     } catch (e) {
+      debugPrint('WebSocket connection error: $e');
       _setState(EspConnectionState.disconnected);
       return false;
     }
@@ -94,13 +112,23 @@ class LivestockWebSocketService {
   // MESSAGE HANDLER
   // --------------------------------------------------------------------------
   void _onMessage(dynamic message) {
+    final msgStr = message.toString().trim();
+    assert(() {
+      debugPrint('[WS RX] $msgStr');
+      return true;
+    }());
+
+    if (msgStr.isEmpty) return;
+
     try {
-      final msgStr = message.toString().trim();
       final upper = msgStr.toUpperCase();
+
+      // Route plain text status & command acknowledgments directly to ackStream
       if (upper.startsWith('ACK') ||
           upper.startsWith('OK') ||
           upper.startsWith('COMMAND_') ||
-          upper.startsWith('EVENT_ACK_')) {
+          upper.startsWith('EVENT_ACK_') ||
+          upper.startsWith('STATUS,')) {
         _ackController.add(msgStr);
         return;
       }
@@ -127,23 +155,24 @@ class LivestockWebSocketService {
         return;
       }
 
-      if (upper == 'EVENTS_END' || upper == 'EVENTS_EMPTY') {
+      if (upper == 'EVENTS_END') {
+        _finishEventSync(StoredEventsSyncStatus.completed);
         return;
       }
 
+      if (upper == 'EVENTS_EMPTY') {
+        _finishEventSync(StoredEventsSyncStatus.empty);
+        return;
+      }
+
+      // JSON payload decoding
       final json = jsonDecode(msgStr) as Map<String, dynamic>;
       final type = json['type']?.toString();
 
       if (type == 'animal') {
         final animal = GpsData.fromJson(json);
-
         _animalController.add(animal);
 
-        // Persist every packet: updates the current-snapshot row and
-        // appends a historical row. Fire-and-forget on purpose — a DB
-        // write failing here should never block or crash live streaming.
-        // This is the single point where all animal data gets persisted,
-        // regardless of which screen (if any) is currently open.
         DatabaseHelper.instance.recordLiveAnimalUpdate(animal).catchError((
           Object e,
         ) {
@@ -162,20 +191,20 @@ class LivestockWebSocketService {
 
         _ackController.add(ackMsg);
       }
-    } catch (_) {
-      final msgStr = message?.toString().trim();
-      if (msgStr != null &&
-          (msgStr.toUpperCase().startsWith('ACK') ||
-              msgStr.toUpperCase().startsWith('OK') ||
-              msgStr.toUpperCase().startsWith('COMMAND_') ||
-              msgStr.toUpperCase().startsWith('EVENT_ACK_'))) {
+    } catch (e) {
+      debugPrint('Error parsing WebSocket message: $e | Raw: $msgStr');
+      final upper = msgStr.toUpperCase();
+      if (upper.startsWith('ACK') ||
+          upper.startsWith('OK') ||
+          upper.startsWith('COMMAND_') ||
+          upper.startsWith('EVENT_ACK_')) {
         _ackController.add(msgStr);
       }
     }
   }
 
   // --------------------------------------------------------------------------
-  // SEND COMMAND
+  // SEND COMMANDS
   // --------------------------------------------------------------------------
   void send(String command) {
     if (isConnected && _socket != null) {
@@ -201,17 +230,58 @@ class LivestockWebSocketService {
     send('FENCE,$animalId,${points.length},$coordinates');
   }
 
-  void requestStoredEvents() {
-    send('GET_EVENTS');
+  bool requestStoredEvents() {
+    if (!isConnected || _socket == null) {
+      return false;
+    }
+
+    _eventSyncTimer?.cancel();
+    _eventSyncController.add(StoredEventsSyncStatus.syncing);
+
+    _eventSyncTimer = Timer(const Duration(seconds: 10), () {
+      _finishEventSync(StoredEventsSyncStatus.failed);
+    });
+
+    try {
+      _socket!.add('GET_EVENTS');
+      return true;
+    } catch (e) {
+      _finishEventSync(StoredEventsSyncStatus.failed);
+      return false;
+    }
   }
 
-  void acknowledgeStoredEvent(int eventId) {
-    send('EVENT_ACK,$eventId');
+  /// Sends acknowledgment for a stored hardware event using the protocol string expected by the base station: EVENT_ACK,id
+  bool acknowledgeStoredEvent(int id) {
+    if (!isConnected || _socket == null) {
+      return false;
+    }
+    try {
+      _socket!.add('EVENT_ACK,$id');
+      return true;
+    } catch (e) {
+      debugPrint('Error sending EVENT_ACK: $e');
+      return false;
+    }
   }
 
-  void enableLiveForAnimals(Iterable<String> animalIds) {
-    for (final animalId in animalIds) {
-      sendLive(animalId, true);
+  /// Enables live tracking for specified animals by issuing individual LIVE,id,ON commands.
+  bool enableLiveForAnimals(dynamic animalIds) {
+    if (!isConnected || _socket == null) {
+      return false;
+    }
+    try {
+      if (animalIds is Iterable) {
+        for (final id in animalIds) {
+          _socket!.add('LIVE,$id,ON');
+        }
+      } else {
+        _socket!.add('LIVE,$animalIds,ON');
+      }
+      return true;
+    } catch (e) {
+      debugPrint('Error enabling live mode: $e');
+      return false;
     }
   }
 
@@ -221,6 +291,9 @@ class LivestockWebSocketService {
   void _onDisconnected() {
     _socket = null;
     _setState(EspConnectionState.disconnected);
+    if (_eventSyncTimer != null) {
+      _finishEventSync(StoredEventsSyncStatus.failed);
+    }
   }
 
   void disconnect() {
@@ -250,5 +323,8 @@ class LivestockWebSocketService {
     _alertController.close();
     _hardwareAlertController.close();
     _eventController.close();
+    _eventSyncTimer?.cancel();
+    _eventSyncTimer = null;
+    _eventSyncController.close();
   }
 }
