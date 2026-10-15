@@ -1478,7 +1478,7 @@ void loop()
     }
     else if (isMyDataSlotStart())
     {
-      pollWaitingForSlot = false;
+      pollWaitingForSlot = false;q
       sendTelemetry();
     }
   }
