@@ -24,6 +24,11 @@ class GpsData {
   // Collar-reported boundary status.
   // Expected values: INSIDE / OUTSIDE.
   final String boundaryStatus;
+  final int zone;
+  final int flags;
+  final String reportedTime;
+  final int hop;
+  final int ageSec;
 
   GpsData({
     required this.deviceId,
@@ -38,6 +43,11 @@ class GpsData {
     required this.rssi,
     required this.snr,
     this.boundaryStatus = 'UNKNOWN',
+    this.zone = 0,
+    this.flags = 0,
+    this.reportedTime = ' ',
+    this.hop = 0,
+    this.ageSec = 0,
   });
 
   factory GpsData.fromJson(Map<String, dynamic> json) {
@@ -67,6 +77,9 @@ class GpsData {
       // Collar boundary status.
       boundaryStatus:
           json['boundaryStatus']?.toString().toUpperCase() ?? 'UNKNOWN',
+      zone: (json['zone'] as num?)?.toInt() ?? 0,
+      flags: (json['flags'] as num?)?.toInt() ?? 0,
+      reportedTime: json['reported_time']?.toString() ?? '',
     );
   }
 
@@ -77,6 +90,16 @@ class GpsData {
     if (fields.length < 9 || fields[0] != 'DATA') {
       throw const FormatException('Invalid DATA packet');
     }
+
+    final zone = fields.length > 9 ? int.tryParse(fields[9]) ?? 0 : 0;
+    final flags = fields.length > 10 ? int.tryParse(fields[10]) ?? 0 : 0;
+    final reportedTime = fields.length > 11 ? fields[11] : '';
+    final boundaryStatus = switch (zone) {
+      1 => 'INSIDE',
+      2 => 'NEAR_FENCE',
+      3 => 'OUTSIDE',
+      _ => 'UNKNOWN',
+    };
 
     return GpsData(
       deviceId: fields[1],
@@ -90,6 +113,10 @@ class GpsData {
       timestamp: DateTime.now().toUtc().toIso8601String(),
       rssi: rssi,
       snr: snr,
+      boundaryStatus: boundaryStatus,
+      zone: zone,
+      flags: flags,
+      reportedTime: reportedTime,
     );
   }
 
@@ -101,6 +128,9 @@ class GpsData {
       'battery': battery,
       'timestamp': timestamp,
       'boundaryStatus': boundaryStatus,
+      'zone': zone,
+      'flags': flags,
+      'reported_time': reportedTime,
     };
   }
 }

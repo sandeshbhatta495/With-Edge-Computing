@@ -217,7 +217,22 @@ class LivestockWebSocketService {
   }
 
   void poll(String animalId) {
-    send('POLL,$animalId');
+    // v2 collars report autonomously and accept NOW during the report
+    // receive window; they do not implement the legacy POLL command.
+    sendNow(animalId);
+  }
+
+  void sendNow(String animalId) {
+    send('NOW,$animalId');
+  }
+
+  void sendConfig(
+    String animalId, {
+    required int normalSec,
+    required int fastSec,
+    required int liveSec,
+  }) {
+    send('CFG,$animalId,$normalSec,$fastSec,$liveSec');
   }
 
   void sendFence(String animalId, List<List<double>> points) {
